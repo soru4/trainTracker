@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Home</title>
+    <script src="https://unpkg.com/ol/dist/ol.js"></script>
+    <link rel="stylesheet" href="https://unpkg.com/ol/ol.css" />
+
+    <script src="https://unpkg.com/ol-mapbox-style/dist/olms.js"></script>
+
+    <style>
+      body {
+        overflow: hidden;
+        margin: 0;
+        padding: 0;
+      }
+      #map {
+        position: absolute;
+
+        width: 100%;
+        height: 100%;
+      }
+      #chat-box {
+        position: absolute;
+
+        z-index: 1000;
+        bottom: 5px;
+        right: 10px;
+        width: 20%;
+        height: 40%;
+        background-color: white;
+        border: 1px solid #ccc;
+        border-radius: 8px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+      #chat-header {
+        background-color: #3f51b5;
+        color: white;
+        padding: 10px;
+        font-weight: bold;
+        cursor: pointer;
+      }
+      #chat-messages {
+        flex-grow: 1;
+        padding: 10px;
+        overflow-y: auto;
+        background-color: #f7f7f7;
+      }
+      #chat-input-container {
+        padding: 10px;
+        border-top: 1px solid #ccc;
+      }
+      #chat-input-container input {
+        width: 100%;
+        padding: 8px;
+        box-sizing: border-box;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="chat-box">
+      <div id="chat-header">Train Chat</div>
+      <div id="chat-messages">
+        <p><em> Ask about trains</em></p>
+      </div>
+      <div id="chat-input-container">
+        <input
+          type="text"
+          id="chat-input"
+          placeholder="Ask about a train or stations along a route:"
+        />
+        <button
+          id="send-btn"
+          style="width: 100%; margin-top: 5px; padding: 5px"
+        >
+          Send
+        </button>
+      </div>
+    </div>
+
+    <div id="map" style="width: 100%; height: 1080px"></div>
+    <script>
+      const chatInput = document.getElementById("chat-input");
+      const sendButton = document.getElementById("send-btn");
+      const chatMessages = document.getElementById("chat-messages");
+
+      function addMessage(text, isUser) {
+        const p = document.createElement("p");
+        p.innerHTML = isUser
+          ? `<strong>You:</strong> ${text}`
+          : `<strong>Train Chat:</strong> ${text}`;
+        p.style.textAlign = isUser ? "right" : "left";
+        p.style.backgroundColor = isUser ? "#e0f7fa" : "#ffffff";
+        p.style.padding = "5px";
+
+        p.style.margin = "5px";
+        chatMessages.appendChild(p);
+      }
+
+      async function sendMessage() {
+        const query = chatInput.value.trim();
+        if (!query) return;
+
+        addMessage(query, true);
+        chatInput.value = "";
+
+        try {
+          const response = await fetch("/api/chat/", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ query: query }),
+          });
+
+          const data = await response.json();
+
+          if (!response.ok) {
+            const errorMsg =
+              data.error || `Error ${response.status}: Failed to get response.`;
+            addMessage(`(Error) ${errorMsg}`, false);
+            return;
+          }
+
+          addMessage(data.answer, false);
+        } catch (error) {
+          console.error("Fetch Error:", error);
+          addMessage("Could not connect to the chat service.", false);
+        }
+      }
+
+      sendButton.addEventListener("click", sendMessage);
+      chatInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          sendMessage();
+        }
+      });
+      const openfreemap = new ol.layer.Group();
+      const map = new ol.Map({
+        layers: [openfreemap],
+        view: new ol.View({
+          center: ol.proj.fromLonLat([-77.0369, 38.9072]),
+          zoom: 6,
+        }),
+        target: "map",
+      });
+      olms.apply(openfreemap, "https://tiles.openfreemap.org/styles/liberty");
+
+      const trainSource = new ol.source.Vector({});
+      const trainLayer = new ol.layer.Vector({
+        source: trainSource,
+        updateWhileAnimating: true,
+        updateWhileInteracting: true,
+      });
+      map.addLayer(trainLayer);
+
+      function styleForTrain(train) {
+        const color =
+          train.velocity < 15
+            ? "#f54e42"
+            : train.velocity < 45
+            ? "rgba(203, 221, 0, 1)"
+            : "rgba(41, 133, 33,1)";
+
+        return new ol.style.Style({
+          image: new ol.style.Circle({
+            radius: 8,
+            fill: new ol.style.Fill({ color }),
+            stroke: new ol.style.Stroke({ color: "#fff", width: 2 }),
+          }),
+
+          text: new ol.style.Text({
+            text: train.routeName + " " + train.trainNum,
+            offsetY: -12,
+            font: "bold 10px sans-serif",
+            fill: new ol.style.Fill({ color: "#111" }),
+            stroke: new ol.style.Stroke({ color: "#fff", width: 2 }),
+          }),
+        });
+      }
+
+      async function fetchAndRenderTrains() {
+        const url = "/api/trains/";
+
+        try {
+          const res = await fetch(url);
+          if (!res.ok) throw new Error("Error: " + res.status);
+
+          const data = await res.json();
+
+          const trains = data.trains || [];
+
+          trainSource.clear();
+
+          trains.forEach((train) => {
+            const lat = Number(train.lat);
+            const lon = Number(train.lon);
+
+            const feature = new ol.Feature({
+              geometry: new ol.geom.Point(ol.proj.fromLonLat([lon, lat])),
+              trainData: train,
+            });
+            feature.setStyle(styleForTrain(train));
+            trainSource.addFeature(feature);
+          });
+        } catch (err) {
+          console.error("Failed to fetch trains:", err);
+        }
+      }
+
+      fetchAndRenderTrains();
+      setInterval(fetchAndRenderTrains, 15000);
+
+      map.on("singleclick", function (evt) {
+        map.forEachFeatureAtPixel(evt.pixel, function (feature) {
+          const t = feature.get("trainData");
+          if (t) {
+            alert(
+              "Train: " +
+                t.routeName +
+                " " +
+                t.trainNum +
+                " Next Stop: " +
+                t.eventCode +
+                " Speed: " +
+                Math.floor(t.velocity) +
+                " mph"
+            );
+          }
+        });
+      });
+    </script>
+  </body>
+</html>
